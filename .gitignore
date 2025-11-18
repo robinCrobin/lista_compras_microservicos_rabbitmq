@@ -1,0 +1,13 @@
+node_modules/
+service/*/node_modules/
+api-gateway/node_modules/
+logs/
+*.log
+.pids/
+*.pid
+service/*/database/
+shared/services-registry.json
+.DS_Store
+.DS_Store?
+.vscode/
+.env
