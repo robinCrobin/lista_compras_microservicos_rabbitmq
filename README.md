@@ -1,0 +1,1 @@
+# lista_compras_microservicos_rabbitmq
