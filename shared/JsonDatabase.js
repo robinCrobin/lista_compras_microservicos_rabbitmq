@@ -242,6 +242,11 @@ class JsonDatabase {
 
     matchesFilter(document, filter) {
         return Object.entries(filter).every(([key, value]) => {
+            // Operador $or - pelo menos um dos critérios deve ser verdadeiro
+            if (key === '$or' && Array.isArray(value)) {
+                return value.some(condition => this.matchesFilter(document, condition));
+            }
+
             const docValue = this.getNestedValue(document, key);
 
             if (typeof value === 'object' && value !== null) {
