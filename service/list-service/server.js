@@ -5,6 +5,7 @@ const morgan = require('morgan');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const axios = require('axios');
+const rabbit = require('../../shared/rabbit');
 
 // Importar banco NoSQL e service registry
 const JsonDatabase = require('../../shared/JsonDatabase');
@@ -16,7 +17,7 @@ class ListService {
         this.port = process.env.PORT || 3002;
         this.serviceName = 'list-service';
         this.serviceUrl = `http://127.0.0.1:${this.port}`;
-        
+
         this.setupDatabase();
         this.setupMiddleware();
         this.setupRoutes();
@@ -51,7 +52,7 @@ class ListService {
             try {
                 const listCount = await this.listsDb.count();
                 const activeLists = await this.listsDb.count({ status: 'active' });
-                
+
                 res.json({
                     service: this.serviceName,
                     status: 'healthy',
@@ -94,6 +95,8 @@ class ListService {
             });
         });
 
+
+
         // List routes
         this.app.post('/lists', this.authMiddleware.bind(this), this.createList.bind(this));
         this.app.get('/lists', this.authMiddleware.bind(this), this.getLists.bind(this));
@@ -104,6 +107,11 @@ class ListService {
         this.app.put('/lists/:id/items/:itemId', this.authMiddleware.bind(this), this.updateItemInList.bind(this));
         this.app.delete('/lists/:id/items/:itemId', this.authMiddleware.bind(this), this.removeItemFromList.bind(this));
         this.app.get('/lists/:id/summary', this.authMiddleware.bind(this), this.getListSummary.bind(this));
+        this.app.post('/lists/:id/checkout',
+            this.authMiddleware.bind(this),
+            this.checkoutList.bind(this)
+        );
+
     }
 
     setupErrorHandling() {
@@ -128,7 +136,7 @@ class ListService {
     // Auth middleware (valida token com User Service)
     async authMiddleware(req, res, next) {
         const authHeader = req.header('Authorization');
-        
+
         if (!authHeader?.startsWith('Bearer ')) {
             return res.status(401).json({
                 success: false,
@@ -139,7 +147,7 @@ class ListService {
         try {
             // Descobrir User Service
             const userService = serviceRegistry.discover('user-service');
-            
+
             // Validar token com User Service
             const response = await axios.post(`${userService.url}/auth/validate`, {
                 token: authHeader.replace('Bearer ', '')
@@ -166,9 +174,9 @@ class ListService {
     // Create list
     async createList(req, res) {
         try {
-            const { 
-                name, 
-                description, 
+            const {
+                name,
+                description,
                 status = 'active'
             } = req.body;
 
@@ -257,9 +265,9 @@ class ListService {
     async updateList(req, res) {
         try {
             const { id } = req.params;
-            const { 
-                name, 
-                description, 
+            const {
+                name,
+                description,
                 status
             } = req.body;
 
@@ -326,13 +334,13 @@ class ListService {
     async addItemToList(req, res) {
         try {
             const { id } = req.params;
-            const { 
-                itemId, 
-                itemName, 
-                quantity, 
-                unit, 
-                estimatedPrice, 
-                purchased = false, 
+            const {
+                itemId,
+                itemName,
+                quantity,
+                unit,
+                estimatedPrice,
+                purchased = false,
                 notes = ''
             } = req.body;
 
@@ -379,12 +387,12 @@ class ListService {
     async updateItemInList(req, res) {
         try {
             const { id, itemId } = req.params;
-            const { 
-                itemName, 
-                quantity, 
-                unit, 
-                estimatedPrice, 
-                purchased, 
+            const {
+                itemName,
+                quantity,
+                unit,
+                estimatedPrice,
+                purchased,
                 notes
             } = req.body;
 
@@ -498,13 +506,62 @@ class ListService {
         }
     }
 
+    // Checkout da lista — PRODUCER do RabbitMQ
+    async checkoutList(req, res) {
+        try {
+            const { id } = req.params;
+
+            const list = await this.listsDb.findById(id);
+            if (!list || list.userId !== req.user.id) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Lista não encontrada'
+                });
+            }
+
+            // Marca a lista como finalizada
+            await this.listsDb.update(id, {
+                status: 'completed',
+                updatedAt: new Date().toISOString()
+            });
+
+            // Publicar evento no RabbitMQ
+            await rabbit.publish(
+                'shopping_events',
+                'list.checkout.completed',
+                {
+                    listId: list.id,
+                    userId: req.user.id,
+                    userEmail: req.user.email,
+                    items: list.items,
+                    summary: list.summary,
+                    timestamp: new Date().toISOString()
+                }
+            );
+
+            // Retornar imediatamente
+            return res.status(202).json({
+                success: true,
+                message: 'Checkout iniciado. Processamento assíncrono.'
+            });
+
+        } catch (error) {
+            console.error('Erro no checkout:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Erro interno no checkout'
+            });
+        }
+    }
+
+
     // Register with service registry
     registerWithRegistry() {
         serviceRegistry.register(this.serviceName, {
             url: this.serviceUrl,
             version: '1.0.0',
             database: 'JSON-NoSQL',
-            endpoints: ['/health', '/lists', '/lists/:id', '/lists/:id/items', '/lists/:id/summary']
+            endpoints: ['/health', '/lists', '/lists/:id', '/lists/:id/items', '/lists/:id/summary', '/lists/:id/checkout']
         });
     }
 
@@ -523,7 +580,7 @@ class ListService {
             console.log(`Health: ${this.serviceUrl}/health`);
             console.log(`Database: JSON-NoSQL`);
             console.log('=====================================');
-            
+
             this.registerWithRegistry();
             this.startHealthReporting();
         });
